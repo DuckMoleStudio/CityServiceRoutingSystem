@@ -2,6 +2,10 @@ package CityServiceRoutingSystem.service;
 
 import CityServiceRoutingSystem.entity.*;
 
+import CityServiceRoutingSystem.entity.storage.DoubleMatrix;
+import CityServiceRoutingSystem.entity.storage.MatrixElement;
+import CityServiceRoutingSystem.entity.storage.MatrixLineMap;
+import CityServiceRoutingSystem.entity.storage.TimeDistancePair;
 import com.graphhopper.GHRequest;
 import com.graphhopper.GHResponse;
 import com.graphhopper.GraphHopper;
@@ -9,16 +13,17 @@ import com.graphhopper.config.CHProfile;
 import com.graphhopper.config.Profile;
 
 import com.graphhopper.util.Parameters;
+import com.graphhopper.util.StopWatch;
 
 import java.util.*;
 
 public class Matrix {
 
     public static Map<WayPoint, MatrixLineMap> FillGHMulti4Map(
-            List<WayPoint> wayPoints, String osmFile, String dir, boolean turns, boolean curbs, boolean time)
+            List<WayPoint> wayPoints, String osmFile, String dir, boolean turns, boolean curbs)
     // using Graph Hopper on real map, with 4 threads, store in HashMap
     {
-
+        StopWatch sw = new StopWatch().start();
         Map<WayPoint, MatrixLineMap> matrix = new HashMap<>();
 
         GraphHopper hopper = new GraphHopper();
@@ -53,7 +58,8 @@ public class Matrix {
                     {
                         if(i==j)
                         {
-                            line.getDistances().put(wayPoints.get(j),Double.POSITIVE_INFINITY);
+                            line.getDistances().put(wayPoints.get(j),
+                                    new TimeDistancePair(Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY));
                         }
                         else
                         {
@@ -77,23 +83,14 @@ public class Matrix {
 
                             GHResponse res = hopper.route(req);
 
-                            double distance = Double.POSITIVE_INFINITY;
+                            double distance = Math.round(res.getBest().getDistance()); // to fit in storage line
+                            double time = res.getBest().getTime();
 
                             if (res.hasErrors()) {
-                                // throw new RuntimeException(res.getErrors().toString());
-
-                            }
-                            else {
-                                distance = time ? res.getBest().getTime() : res.getBest().getDistance();
-
-                                /*
-                                if (time) {distance = res.getBest().getTime();}
-                                else distance = res.getBest().getDistance();
-                                                                 */
+                                throw new RuntimeException(res.getErrors().toString());
                             }
 
-
-                            line.getDistances().put(wayPoints.get(j),distance);
+                            line.getDistances().put(wayPoints.get(j),new TimeDistancePair(time,distance));
                         }
                     }
 
@@ -157,14 +154,15 @@ public class Matrix {
             System.out.println("Interrupt Occurred");
             e.printStackTrace();
         }
-
+        System.out.println("\nMatrix calculated in: " + sw.stop().getSeconds() + " s\n");
         return matrix;
     }
 
-    public static DoubleMatrix FillGHDoubleTime(
+    public static DoubleMatrix FillGHDouble(
             List<WayPoint> wayPoints, String osmFile, String dir, WayPoint base)
     // using Graph Hopper on real map, store in two (maybe) HashMaps, time-based
     {
+        StopWatch sw = new StopWatch().start();
 
         Map<WayPoint, MatrixLineMap> matrixGood = new HashMap<>();
         Map<WayPoint, MatrixLineMap> matrixBad = new HashMap<>();
@@ -212,59 +210,29 @@ public class Matrix {
         {
             wayPointsGood.add(base);
             System.out.println("\n\nCalculating matrix for " + wayPointsGood.size() + " relevant points\n");
-            matrixGood = Matrix.FillGHMulti4Map(wayPointsGood,osmFile,dir,true,true,true);
+            matrixGood = Matrix.FillGHMulti4Map(wayPointsGood,osmFile,dir,true,true);
         }
 
         if(wayPointsBad.size()>0)
         {
             wayPointsBad.add(base);
             System.out.println("\n\nCalculating matrix for " + wayPointsBad.size() + " irrelevant points\n");
-            matrixBad = Matrix.FillGHMulti4Map(wayPointsBad,osmFile,dir,false,false,true);
+            matrixBad = Matrix.FillGHMulti4Map(wayPointsBad,osmFile,dir,false,false);
         }
 
-
+        System.out.println("\nMatrix calculated in: " + sw.stop().getSeconds() + " s\n");
         return new DoubleMatrix(matrixGood,matrixBad,wayPointsGood,wayPointsBad);
     }
 
 
     public static double DistanceBetweenMap(WayPoint start, WayPoint end, Map<WayPoint,MatrixLineMap> matrix)
     {
-        return matrix.get(start).getDistances().get(end);
+        return matrix.get(start).getDistances().get(end).getDistance();
     }
 
-    public static MatrixElement Nearest2PairMap(
-            WayPoint start,
-            WayPoint end,
-            Map<WayPoint,MatrixLineMap> matrix,
-            List<WayPoint> existing,
-            int trim)
+    public static double TimeBetweenMap(WayPoint start, WayPoint end, Map<WayPoint,MatrixLineMap> matrix)
     {
-        MatrixLineMap mlFrom = matrix.get(start);
-
-        Set<Map.Entry<WayPoint,Double>> distancesFrom = mlFrom.getDistances().entrySet();
-
-
-        MatrixElement result = Matrix.NearestMap(start,matrix,existing);
-        double minDistance = result.getDistance() +
-                Matrix.DistanceBetweenMap(result.getWayPoint(),end,matrix);
-        result.setDistance(minDistance);
-        //System.out.println("Nearest dist " + minDistance);
-
-        for (Map.Entry<WayPoint,Double> newME: distancesFrom)
-        {
-            if(existing.contains(newME.getKey()))
-            {
-                if(((newME.getValue() + Matrix.DistanceBetweenMap(newME.getKey(),end,matrix)) + trim)
-                        < minDistance) // trim added!!
-                {
-                    minDistance = newME.getValue() + Matrix.DistanceBetweenMap(newME.getKey(),end,matrix);
-                    result.setDistance(minDistance); // combined distance here, pay attention
-                    result.setWayPoint(newME.getKey());
-                }
-            }
-        }
-        //System.out.println("Resulting dist " + minDistance + "\n");
-        return result;
+        return matrix.get(start).getDistances().get(end).getTime();
     }
 
     public static MatrixElement NearestMap(
@@ -273,16 +241,17 @@ public class Matrix {
             List<WayPoint> existing)
     {
         MatrixLineMap ml = matrix.get(start);
-        Set<Map.Entry<WayPoint,Double>> distances = ml.getDistances().entrySet();
+        Set<Map.Entry<WayPoint,TimeDistancePair>> distances = ml.getDistances().entrySet();
         MatrixElement result = new MatrixElement();
-        double minDistance = Double.POSITIVE_INFINITY;
+        double minTime = Double.POSITIVE_INFINITY;
 
-        for (Map.Entry<WayPoint,Double> me: distances)
+        for (Map.Entry<WayPoint,TimeDistancePair> me: distances)
         {
-            if(me.getValue() < minDistance && existing.contains(me.getKey()))
+            if(me.getValue().getTime() < minTime && existing.contains(me.getKey()))
             {
-                minDistance = me.getValue();
-                result.setDistance(me.getValue());
+                minTime = me.getValue().getTime();
+                result.setDistance(me.getValue().getDistance());
+                result.setTime(me.getValue().getTime());
                 result.setWayPoint(me.getKey());
             }
         }
@@ -290,6 +259,7 @@ public class Matrix {
 
         return result;
     }
+
 
 
 }

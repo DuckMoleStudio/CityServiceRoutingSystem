@@ -1,4 +1,5 @@
-package CityServiceRoutingSystem.entity;
+package CityServiceRoutingSystem.entity.storage;
+import CityServiceRoutingSystem.entity.WayPoint;
 import lombok.*;
 
 @Getter
@@ -9,6 +10,7 @@ import lombok.*;
 @ToString
 @EqualsAndHashCode
 
+// internal
 public class Hop {
     WayPoint from,to;
 }
